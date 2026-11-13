@@ -1,0 +1,1420 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IMF // 2026 東北亞與東南亞地理情報監控系統</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&family=Orbitron:wght@500;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+  <style>
+    :root {
+      --bg-void: #090604;
+      --bg-panel: rgba(18, 12, 8, 0.86);
+      --border-amber: rgba(212, 154, 106, 0.32);
+      --border-bright: rgba(240, 189, 138, 0.78);
+      --text-primary: #f5e6d3;
+      --text-secondary: #cfa982;
+      --text-muted: #8c6b4f;
+      --accent-glow: #e8a86b;
+      --accent-alert: #ff9d47;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: var(--bg-void);
+      color: var(--text-primary);
+      font-family: 'Noto Sans TC', 'JetBrains Mono', sans-serif;
+      user-select: none;
+    }
+
+    /* 背景微弱網格與掃描線氛圍 */
+    .hud-atmosphere {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 5;
+      background:
+        radial-gradient(circle at 52% 48%, transparent 48%, rgba(4, 2, 1, 0.78) 100%),
+        repeating-linear-gradient(
+          0deg,
+          rgba(212, 154, 106, 0.025) 0px,
+          rgba(212, 154, 106, 0.025) 1px,
+          transparent 1px,
+          transparent 3px
+        );
+    }
+
+    /* 地圖容器 */
+    #map-container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      background: radial-gradient(ellipse at 54% 48%, #17100b 0%, #0b0705 68%, #060403 100%);
+      cursor: grab;
+    }
+
+    #map-container:active {
+      cursor: grabbing;
+    }
+
+    svg#tactical-map {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* 經緯網格 */
+    .graticule {
+      fill: none;
+      stroke: rgba(185, 132, 86, 0.11);
+      stroke-width: 0.6;
+      stroke-dasharray: 2, 4;
+    }
+
+    .equator-line {
+      fill: none;
+      stroke: rgba(232, 168, 107, 0.28);
+      stroke-width: 0.9;
+      stroke-dasharray: 6, 4;
+    }
+
+    /* 非監控區周邊大陸 */
+    .context-land {
+      fill: #17110c;
+      stroke: #2e2118;
+      stroke-width: 0.6;
+      transition: opacity 0.3s ease;
+    }
+
+    /* 監控目標國界 */
+    .target-country {
+      stroke: rgba(235, 185, 138, 0.45);
+      stroke-width: 0.85;
+      cursor: pointer;
+      transition: fill 0.2s ease, stroke 0.2s ease, filter 0.2s ease, opacity 0.25s ease;
+    }
+
+    .target-country:hover,
+    .target-country.active-lock {
+      stroke: #ffe0bd;
+      stroke-width: 1.6;
+      filter: drop-shadow(0 0 10px rgba(232, 168, 107, 0.55));
+    }
+
+    .target-country.dimmed {
+      opacity: 0.24;
+    }
+
+    /* 海域標籤 */
+    .sea-label {
+      font-family: 'Orbitron', 'JetBrains Mono', monospace;
+      fill: rgba(186, 136, 92, 0.32);
+      letter-spacing: 3px;
+      pointer-events: none;
+      text-anchor: middle;
+    }
+
+    .sea-label-zh {
+      font-family: 'Noto Sans TC', sans-serif;
+      fill: rgba(186, 136, 92, 0.28);
+      letter-spacing: 4px;
+      pointer-events: none;
+      text-anchor: middle;
+    }
+
+    /* 首都與戰略節點 */
+    .capital-node {
+      cursor: pointer;
+    }
+
+    .capital-dot {
+      fill: #ffcf99;
+      stroke: #1a0f08;
+      stroke-width: 1;
+    }
+
+    .capital-ring {
+      fill: none;
+      stroke: rgba(255, 207, 153, 0.6);
+      stroke-width: 0.8;
+    }
+
+    .pulse-ring {
+      fill: none;
+      stroke: #e8a86b;
+      stroke-width: 1;
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: radarPulse 2.8s infinite ease-out;
+      pointer-events: none;
+    }
+
+    @keyframes radarPulse {
+      0% { transform: scale(1); opacity: 0.85; }
+      100% { transform: scale(4.2); opacity: 0; }
+    }
+
+    .country-label-map {
+      font-family: 'Noto Sans TC', sans-serif;
+      fill: rgba(248, 232, 212, 0.82);
+      font-weight: 500;
+      pointer-events: none;
+      text-anchor: middle;
+      text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95);
+    }
+
+    /* 鎖定準星 */
+    .target-reticle {
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+
+    .target-reticle.visible {
+      opacity: 1;
+    }
+
+    .reticle-spin {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: spinSlow 10s linear infinite;
+    }
+
+    @keyframes spinSlow {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    /* 頂部 IMF 情報控制列 */
+    .hud-topbar {
+      position: fixed;
+      top: 16px;
+      left: 20px;
+      right: 20px;
+      z-index: 20;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 18px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-amber);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65);
+    }
+
+    .hud-topbar::before,
+    .hud-topbar::after {
+      content: "";
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      border-color: var(--accent-glow);
+      border-style: solid;
+    }
+    .hud-topbar::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+    .hud-topbar::after { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+
+    .brand-block {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .status-beacon {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent-alert);
+      box-shadow: 0 0 10px var(--accent-alert);
+      animation: blinkBeacon 1.8s infinite ease-in-out;
+    }
+
+    @keyframes blinkBeacon {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
+    .brand-title {
+      font-family: 'Orbitron', 'Noto Sans TC', sans-serif;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      color: var(--text-primary);
+    }
+
+    .brand-sub {
+      font-family: 'JetBrains Mono', 'Noto Sans TC', sans-serif;
+      font-size: 11px;
+      color: var(--text-secondary);
+      letter-spacing: 1px;
+      margin-top: 2px;
+    }
+
+    .telemetry-strip {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .telemetry-item span {
+      color: var(--text-muted);
+      margin-right: 6px;
+    }
+
+    .telemetry-item strong {
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    /* 左側：目標地理情報鎖定面板 */
+    .intel-panel {
+      position: fixed;
+      top: 86px;
+      left: 20px;
+      width: 315px;
+      z-index: 20;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-amber);
+      backdrop-filter: blur(10px);
+      padding: 14px 16px;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.7);
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border-amber);
+      padding-bottom: 8px;
+      margin-bottom: 10px;
+      font-family: 'JetBrains Mono', sans-serif;
+      font-size: 10px;
+      letter-spacing: 1.4px;
+      color: var(--text-secondary);
+    }
+
+    .panel-tag {
+      padding: 2px 6px;
+      background: rgba(212, 154, 106, 0.16);
+      border: 1px solid var(--border-amber);
+      color: var(--accent-glow);
+      font-size: 10px;
+    }
+
+    .intel-country-name {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: 1px;
+    }
+
+    .intel-country-en {
+      font-family: 'Orbitron', 'JetBrains Mono', sans-serif;
+      font-size: 11px;
+      color: var(--accent-glow);
+      letter-spacing: 1.5px;
+      margin-top: 2px;
+      margin-bottom: 12px;
+    }
+
+    .intel-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 10px;
+      margin-bottom: 12px;
+    }
+
+    .intel-cell {
+      background: rgba(34, 23, 15, 0.55);
+      border-left: 2px solid var(--accent-glow);
+      padding: 6px 8px;
+    }
+
+    .intel-cell-label {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-bottom: 2px;
+    }
+
+    .intel-cell-value {
+      font-size: 12px;
+      color: var(--text-primary);
+      font-weight: 500;
+      font-family: 'JetBrains Mono', 'Noto Sans TC', sans-serif;
+    }
+
+    .intel-desc-box {
+      font-size: 12px;
+      line-height: 1.65;
+      color: var(--text-secondary);
+      background: rgba(12, 8, 5, 0.65);
+      border: 1px solid rgba(212, 154, 106, 0.18);
+      padding: 9px 10px;
+    }
+
+    .intel-desc-box strong {
+      color: var(--text-primary);
+      display: block;
+      font-size: 11px;
+      margin-bottom: 4px;
+      letter-spacing: 0.8px;
+    }
+
+    /* 左下角：視角與戰區快選控制 */
+    .control-dock {
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
+      z-index: 20;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .hud-btn {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-amber);
+      color: var(--text-secondary);
+      padding: 8px 12px;
+      font-family: 'JetBrains Mono', 'Noto Sans TC', sans-serif;
+      font-size: 11px;
+      cursor: pointer;
+      backdrop-filter: blur(8px);
+      transition: all 0.2s ease;
+      letter-spacing: 0.5px;
+    }
+
+    .hud-btn:hover,
+    .hud-btn.active {
+      background: rgba(212, 154, 106, 0.22);
+      border-color: var(--border-bright);
+      color: var(--text-primary);
+      box-shadow: 0 0 12px rgba(212, 154, 106, 0.25);
+    }
+
+    /* 右下角：清楚的顏色圖例 */
+    .legend-panel {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 320px;
+      z-index: 20;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-amber);
+      backdrop-filter: blur(10px);
+      padding: 14px 16px;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.72);
+    }
+
+    .legend-panel::after {
+      content: "";
+      position: absolute;
+      bottom: -1px;
+      right: -1px;
+      width: 12px;
+      height: 12px;
+      border-bottom: 2px solid var(--accent-glow);
+      border-right: 2px solid var(--accent-glow);
+    }
+
+    .legend-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: 1px;
+      padding-bottom: 8px;
+      margin-bottom: 10px;
+      border-bottom: 1px solid var(--border-amber);
+    }
+
+    .legend-title span {
+      font-family: 'JetBrains Mono', sans-serif;
+      font-size: 10px;
+      font-weight: 400;
+      color: var(--text-muted);
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 6px 6px;
+      margin-bottom: 4px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.2s ease;
+    }
+
+    .legend-item:hover,
+    .legend-item.active-filter {
+      background: rgba(212, 154, 106, 0.1);
+      border-color: rgba(212, 154, 106, 0.35);
+    }
+
+    .swatch-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+
+    .swatch-bar {
+      display: flex;
+      gap: 2px;
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border: 1px solid rgba(255, 224, 189, 0.35);
+    }
+
+    .legend-text-group {
+      flex: 1;
+    }
+
+    .legend-region-name {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .legend-region-name em {
+      font-style: normal;
+      font-family: 'JetBrains Mono', sans-serif;
+      font-size: 10px;
+      color: var(--accent-glow);
+    }
+
+    .legend-countries {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+      line-height: 1.4;
+    }
+
+    .legend-footnote {
+      margin-top: 8px;
+      padding-top: 7px;
+      border-top: 1px dashed rgba(212, 154, 106, 0.22);
+      font-size: 10px;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* 滑鼠懸停浮動情報卡 */
+    .hover-tooltip {
+      position: fixed;
+      z-index: 30;
+      pointer-events: none;
+      opacity: 0;
+      min-width: 260px;
+      max-width: 310px;
+      background: rgba(14, 9, 6, 0.94);
+      border: 1px solid var(--border-bright);
+      padding: 10px 12px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.85), 0 0 15px rgba(232, 168, 107, 0.18);
+      backdrop-filter: blur(8px);
+      transition: opacity 0.12s ease;
+    }
+
+    .hover-tooltip.visible {
+      opacity: 1;
+    }
+
+    .tt-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      border-bottom: 1px solid rgba(212, 154, 106, 0.3);
+      padding-bottom: 5px;
+      margin-bottom: 6px;
+    }
+
+    .tt-name {
+      font-size: 16px;
+      font-weight: 700;
+      color: #fff2e2;
+    }
+
+    .tt-badge {
+      font-family: 'JetBrains Mono', 'Noto Sans TC', sans-serif;
+      font-size: 10px;
+      color: var(--accent-glow);
+      background: rgba(212, 154, 106, 0.14);
+      padding: 1px 6px;
+      border: 1px solid rgba(212, 154, 106, 0.35);
+    }
+
+    .tt-meta {
+      font-size: 11px;
+      color: var(--text-secondary);
+      line-height: 1.55;
+    }
+
+    .tt-meta div {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .tt-meta span.label {
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .tt-geo-note {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px dashed rgba(212, 154, 106, 0.25);
+      font-size: 11px;
+      color: #e2c5a6;
+      line-height: 1.45;
+    }
+
+    /* 載入畫面 */
+    #loading-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      background: #090604;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      font-family: 'JetBrains Mono', 'Noto Sans TC', sans-serif;
+      transition: opacity 0.45s ease;
+    }
+
+    .loader-ring {
+      width: 52px;
+      height: 52px;
+      border: 2px solid rgba(212, 154, 106, 0.2);
+      border-top-color: var(--accent-glow);
+      border-radius: 50%;
+      animation: spinSlow 1s linear infinite;
+    }
+
+    .loader-text {
+      font-size: 12px;
+      letter-spacing: 2px;
+      color: var(--accent-glow);
+    }
+
+    @media (max-width: 900px) {
+      .intel-panel { display: none; }
+      .telemetry-strip { display: none; }
+      .legend-panel { width: 260px; padding: 10px 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="loading-overlay">
+    <div class="loader-ring"></div>
+    <div class="loader-text">INITIALIZING IMF ASIA-PACIFIC TOPOLOGY // 2026</div>
+  </div>
+
+  <div class="hud-atmosphere"></div>
+
+  <!-- 頂部情報導覽列 -->
+  <header class="hud-topbar">
+    <div class="brand-block">
+      <div class="status-beacon"></div>
+      <div>
+        <div class="brand-title">IMF // INDO-PACIFIC GEOSPATIAL MONITOR</div>
+        <div class="brand-sub">2026 東北亞與東南亞衛星國界情報系統 · VECTOR SECTOR 04-B</div>
+      </div>
+    </div>
+    <div class="telemetry-strip">
+      <div class="telemetry-item"><span>CURSOR</span><strong id="hud-coords">LAT --.--° | LON ---.--°</strong></div>
+      <div class="telemetry-item"><span>ZOOM</span><strong id="hud-zoom">1.00x</strong></div>
+      <div class="telemetry-item"><span>SYSTEM TIME</span><strong id="hud-clock">2026-11-13 --:--:--</strong></div>
+    </div>
+  </header>
+
+  <!-- 左側：目標詳細地理面板 -->
+  <aside class="intel-panel" id="intel-panel">
+    <div class="panel-header">
+      <span>TARGET TELEMETRY</span>
+      <span class="panel-tag" id="panel-region-tag">STANDBY</span>
+    </div>
+    <div class="intel-country-name" id="panel-name">東亞與東南亞戰區</div>
+    <div class="intel-country-en" id="panel-en">NORTHEAST & SOUTHEAST ASIA // 2026</div>
+    <div class="intel-grid">
+      <div class="intel-cell">
+        <div class="intel-cell-label">首都 / 核心城市</div>
+        <div class="intel-cell-value" id="panel-capital">跨區聯防監控中</div>
+      </div>
+      <div class="intel-cell">
+        <div class="intel-cell-label">國土面積</div>
+        <div class="intel-cell-value" id="panel-area">17 個主要國家/地區</div>
+      </div>
+      <div class="intel-cell">
+        <div class="intel-cell-label">地理座標</div>
+        <div class="intel-cell-value" id="panel-coord">11°S – 53°N</div>
+      </div>
+      <div class="intel-cell">
+        <div class="intel-cell-label">地形特徵</div>
+        <div class="intel-cell-value" id="panel-terrain">大陸、半島與群島弧</div>
+      </div>
+    </div>
+    <div class="intel-desc-box">
+      <strong>GEOGRAPHIC & 2026 STRATEGIC BRIEF</strong>
+      <span id="panel-desc">將滑鼠游標移至地圖上任一棕色系國家，即可即時鎖定國界與島嶼輪廓，並查閱中文國名、首都、面積與 2026 年區域地理情報。支援滾輪縮放與拖曳平移。</span>
+    </div>
+  </aside>
+
+  <!-- 地圖 SVG 主畫布 -->
+  <main id="map-container">
+    <svg id="tactical-map"></svg>
+  </main>
+
+  <!-- 滑鼠懸停提示卡 -->
+  <div class="hover-tooltip" id="hover-tooltip">
+    <div class="tt-head">
+      <span class="tt-name" id="tt-name">國家名稱</span>
+      <span class="tt-badge" id="tt-badge">區域</span>
+    </div>
+    <div class="tt-meta">
+      <div><span class="label">首都 / 核心</span><strong id="tt-capital">--</strong></div>
+      <div><span class="label">國土面積</span><strong id="tt-area">--</strong></div>
+      <div><span class="label">地形類型</span><strong id="tt-terrain">--</strong></div>
+    </div>
+    <div class="tt-geo-note" id="tt-note">--</div>
+  </div>
+
+  <!-- 左下角控制列 -->
+  <div class="control-dock">
+    <button class="hud-btn" id="btn-zoom-in" title="放大">＋</button>
+    <button class="hud-btn" id="btn-zoom-out" title="縮小">－</button>
+    <button class="hud-btn active" id="btn-reset">全區總覽</button>
+    <button class="hud-btn" id="btn-focus-nea">聚焦東北亞</button>
+    <button class="hud-btn" id="btn-focus-sea">聚焦東南亞</button>
+  </div>
+
+  <!-- 右下角圖例面板 -->
+  <section class="legend-panel" id="legend-panel">
+    <div class="legend-title">
+      區域色階圖例 (棕色系)
+      <span>CLICK TO FILTER</span>
+    </div>
+
+    <div class="legend-item" data-region="nea">
+      <div class="swatch-stack">
+        <div class="swatch-bar">
+          <div class="swatch" style="background:#e3b282;"></div>
+          <div class="swatch" style="background:#d49a6a;"></div>
+          <div class="swatch" style="background:#b67c49;"></div>
+        </div>
+      </div>
+      <div class="legend-text-group">
+        <div class="legend-region-name">東北亞與東亞核心區 <em>6 國</em></div>
+        <div class="legend-countries">亮銅棕至琥珀棕：臺灣、日本、南韓、北韓、中國、蒙古</div>
+      </div>
+    </div>
+
+    <div class="legend-item" data-region="sea_mainland">
+      <div class="swatch-stack">
+        <div class="swatch-bar">
+          <div class="swatch" style="background:#a66c3e;"></div>
+          <div class="swatch" style="background:#8b562e;"></div>
+          <div class="swatch" style="background:#6d4121;"></div>
+        </div>
+      </div>
+      <div class="legend-text-group">
+        <div class="legend-region-name">東南亞中南半島區 <em>5 國</em></div>
+        <div class="legend-countries">肉桂棕至深栗棕：泰國、越南、柬埔寨、緬甸、寮國</div>
+      </div>
+    </div>
+
+    <div class="legend-item" data-region="sea_maritime">
+      <div class="swatch-stack">
+        <div class="swatch-bar">
+          <div class="swatch" style="background:#7a4e30;"></div>
+          <div class="swatch" style="background:#5c3922;"></div>
+          <div class="swatch" style="background:#442817;"></div>
+        </div>
+      </div>
+      <div class="legend-text-group">
+        <div class="legend-region-name">東南亞海洋群島區 <em>6 國</em></div>
+        <div class="legend-countries">紅木棕至深焙咖啡棕：菲律賓、馬來西亞、新加坡、汶萊、印尼、東帝汶</div>
+      </div>
+    </div>
+
+    <div class="legend-footnote">
+      <span><span class="swatch" style="display:inline-block;vertical-align:middle;margin-right:5px;background:#17110c;border-color:#3a2b20;"></span>非監控周邊陸塊</span>
+      <span>◎ 戰略首都節點</span>
+    </div>
+  </section>
+
+  <script>
+    // 2026 年東北亞與東南亞各國地理情報資料庫 (ISO 3166-1 numeric IDs)
+    const COUNTRY_DATA = {
+      // 東北亞與東亞核心區 (亮銅琥珀棕色系)
+      "158": {
+        nameZh: "臺灣",
+        nameEn: "TAIWAN // TWN",
+        region: "nea",
+        regionLabel: "東北亞 / 東亞島弧",
+        color: "#e3b282",
+        capital: "臺北市",
+        capitalCoord: [121.5654, 25.0330],
+        labelCoord: [120.95, 23.75],
+        area: "36,197 km²",
+        terrain: "高山島嶼、西岸平原",
+        coordText: "23.7°N, 121.0°E",
+        note: "位於西太平洋第一島鏈核心樞紐，北臨東海、南接巴士海峽與南海，全島多山且為全球半導體供應鏈關鍵節點。"
+      },
+      "392": {
+        nameZh: "日本",
+        nameEn: "JAPAN // JPN",
+        region: "nea",
+        regionLabel: "東北亞群島",
+        color: "#d49a6a",
+        capital: "東京都",
+        capitalCoord: [139.6917, 35.6895],
+        labelCoord: [138.25, 36.20],
+        area: "377,975 km²",
+        terrain: "火山列島、四座主島與琉球群島",
+        coordText: "36.2°N, 138.3°E",
+        note: "由北海道、本州、四國、九州與西南諸島構成的狹長島弧，橫跨日本海與太平洋，地震與火山活動頻繁。"
+      },
+      "410": {
+        nameZh: "南韓",
+        nameEn: "SOUTH KOREA // KOR",
+        region: "nea",
+        regionLabel: "東北亞朝鮮半島",
+        color: "#c28554",
+        capital: "首爾特別市",
+        capitalCoord: [126.9780, 37.5665],
+        labelCoord: [127.80, 36.40],
+        area: "100,413 km²",
+        terrain: "半島山地、西南多島海岸",
+        coordText: "36.4°N, 127.8°E",
+        note: "位於朝鮮半島南部，西臨黃海、東接日本海、南望朝鮮海峽（大韓海峽），太白山脈縱貫東部。"
+      },
+      "408": {
+        nameZh: "北韓",
+        nameEn: "NORTH KOREA // PRK",
+        region: "nea",
+        regionLabel: "東北亞朝鮮半島",
+        color: "#9e653a",
+        capital: "平壤市",
+        capitalCoord: [125.7625, 39.0392],
+        labelCoord: [127.10, 40.20],
+        area: "120,540 km²",
+        terrain: "高原山地、鴨綠江與圖們江界河",
+        coordText: "40.2°N, 127.1°E",
+        note: "占據朝鮮半島北部，北接中國東北與俄羅斯遠東地區，境內約八成為山地與蓋馬高原。"
+      },
+      "156": {
+        nameZh: "中國",
+        nameEn: "CHINA // CHN",
+        region: "nea",
+        regionLabel: "東亞大陸",
+        color: "#b07444",
+        capital: "北京市",
+        capitalCoord: [116.4074, 39.9042],
+        labelCoord: [104.50, 35.00],
+        area: "約 9,596,961 km²",
+        terrain: "西高東低三級階梯地形",
+        coordText: "35.0°N, 104.5°E",
+        note: "東亞大陸面積最大國家，東臨渤海、黃海、東海與南海，長江與黃河自青藏高原向東注入太平洋。"
+      },
+      "496": {
+        nameZh: "蒙古",
+        nameEn: "MONGOLIA // MNG",
+        region: "nea",
+        regionLabel: "東北亞內陸高原",
+        color: "#8a562f",
+        capital: "烏蘭巴托",
+        capitalCoord: [106.9057, 47.8864],
+        labelCoord: [103.80, 46.80],
+        area: "1,564,116 km²",
+        terrain: "草原、戈壁沙漠與阿爾泰山脈",
+        coordText: "46.8°N, 103.8°E",
+        note: "夾處於俄羅斯與中國之間的內陸高原國，平均海拔約 1,580 公尺，屬於典型溫帶大陸性氣候。"
+      },
+
+      // 東南亞中南半島區 (肉桂栗木棕色系)
+      "764": {
+        nameZh: "泰國",
+        nameEn: "THAILAND // THA",
+        region: "sea_mainland",
+        regionLabel: "東南亞中南半島",
+        color: "#a66c3e",
+        capital: "曼谷",
+        capitalCoord: [100.5018, 13.7563],
+        labelCoord: [101.00, 15.20],
+        area: "513,120 km²",
+        terrain: "昭披耶河沖積平原與馬來半島北段",
+        coordText: "15.2°N, 101.0°E",
+        note: "位居中南半島地理核心，南瀕泰國灣並延伸至克拉地峽，同時擁有太平洋與印度洋安達曼海雙海岸線。"
+      },
+      "704": {
+        nameZh: "越南",
+        nameEn: "VIETNAM // VNM",
+        region: "sea_mainland",
+        regionLabel: "東南亞中南半島",
+        color: "#8f5930",
+        capital: "河內市",
+        capitalCoord: [105.8342, 21.0278],
+        labelCoord: [108.10, 14.80],
+        area: "331,212 km²",
+        terrain: "紅河三角洲、長山山脈與湄公河三角洲",
+        coordText: "14.8°N, 108.1°E",
+        note: "呈狹長 S 形分布於中南半島東緣，擁有超過 3,200 公里南海海岸線，南北兩端為重要農業三角洲。"
+      },
+      "116": {
+        nameZh: "柬埔寨",
+        nameEn: "CAMBODIA // KHM",
+        region: "sea_mainland",
+        regionLabel: "東南亞中南半島",
+        color: "#b87e4e",
+        capital: "金邊",
+        capitalCoord: [104.9282, 11.5564],
+        labelCoord: [104.90, 12.60],
+        area: "181,035 km²",
+        terrain: "洞里薩湖盆地與湄公河下游平原",
+        coordText: "12.6°N, 104.9°E",
+        note: "中部為低平富饒的中央大平原，洞里薩湖為東南亞最大淡水湖，西南方濱臨泰國灣。"
+      },
+      "104": {
+        nameZh: "緬甸",
+        nameEn: "MYANMAR // MMR",
+        region: "sea_mainland",
+        regionLabel: "東南亞中南半島",
+        color: "#784825",
+        capital: "奈比多",
+        capitalCoord: [96.1297, 19.7633],
+        labelCoord: [96.20, 21.30],
+        area: "676,578 km²",
+        terrain: "伊洛瓦底江谷地、撣邦高原與阿拉干山脈",
+        coordText: "21.3°N, 96.2°E",
+        note: "中南半島面積最大國家，扼守東南亞通往南亞孟加拉灣與印度洋的陸上與海上門戶。"
+      },
+      "418": {
+        nameZh: "寮國",
+        nameEn: "LAOS // LAO",
+        region: "sea_mainland",
+        regionLabel: "東南亞中南半島",
+        color: "#633b1d",
+        capital: "永珍",
+        capitalCoord: [102.6331, 17.9757],
+        labelCoord: [103.50, 18.80],
+        area: "236,800 km²",
+        terrain: "山地高原地形、湄公河縱貫西界",
+        coordText: "18.8°N, 103.5°E",
+        note: "東南亞唯一的內陸國家，境內約七成為山地與高原，正透過中寮鐵路等廊道轉型為「陸聯國」。"
+      },
+
+      // 東南亞海洋群島區 (深焙紅木與咖啡棕色系)
+      "608": {
+        nameZh: "菲律賓",
+        nameEn: "PHILIPPINES // PHL",
+        region: "sea_maritime",
+        regionLabel: "東南亞海洋群島",
+        color: "#73492c",
+        capital: "馬尼拉",
+        capitalCoord: [120.9842, 14.5995],
+        labelCoord: [122.40, 12.20],
+        area: "300,000 km²",
+        terrain: "7,641 座島嶼、呂宋與民答那峨主島",
+        coordText: "12.2°N, 122.4°E",
+        note: "位於西太平洋火山帶與第一島鏈南段，北隔巴士海峽與臺灣相望，且為 2026 年東協 (ASEAN) 輪值主席國。"
+      },
+      "458": {
+        nameZh: "馬來西亞",
+        nameEn: "MALAYSIA // MYS",
+        region: "sea_maritime",
+        regionLabel: "東南亞半島與群島",
+        color: "#5e3b23",
+        capital: "吉隆坡",
+        capitalCoord: [101.6869, 3.1390],
+        labelCoord: [102.20, 4.10],
+        area: "330,803 km²",
+        terrain: "馬來半島南部與婆羅洲沙巴/砂拉越",
+        coordText: "4.1°N, 102.2°E",
+        note: "國土由南海分隔為西馬（馬來半島）與東馬（婆羅洲北部）兩大部分，扼守麻六甲海峽東岸。"
+      },
+      "702": {
+        nameZh: "新加坡",
+        nameEn: "SINGAPORE // SGP",
+        region: "sea_maritime",
+        regionLabel: "東南亞海洋樞紐",
+        color: "#8c5c3a",
+        capital: "新加坡市",
+        capitalCoord: [103.8198, 1.3521],
+        labelCoord: [104.20, 1.15],
+        area: "734 km²",
+        terrain: "低平海島城市國家、柔佛海峽隔岸",
+        coordText: "1.35°N, 103.82°E",
+        note: "位於馬來半島最南端，緊鄰麻六甲海峽與新加坡海峽交會處，是連接太平洋與印度洋的全球航運咽喉。",
+        isSmallIsland: true
+      },
+      "096": {
+        nameZh: "汶萊",
+        nameEn: "BRUNEI // BRN",
+        region: "sea_maritime",
+        regionLabel: "東南亞婆羅洲北岸",
+        color: "#7d5133",
+        capital: "斯里巴加灣市",
+        capitalCoord: [114.9400, 4.9031],
+        labelCoord: [114.65, 4.65],
+        area: "5,765 km²",
+        terrain: "沿海低地與熱帶雨林丘陵",
+        coordText: "4.9°N, 114.9°E",
+        note: "位於婆羅洲西北部、濱臨南海，領土被馬來西亞砂拉越分隔為兩塊飛地，擁有豐富近海油氣資源。",
+        isSmallIsland: true
+      },
+      "360": {
+        nameZh: "印尼",
+        nameEn: "INDONESIA // IDN",
+        region: "sea_maritime",
+        regionLabel: "東南亞赤道群島",
+        color: "#442817",
+        capital: "雅加達 (努山塔拉建設中)",
+        capitalCoord: [106.8456, -6.2088],
+        labelCoord: [113.80, -2.10],
+        area: "1,904,569 km²",
+        terrain: "橫跨赤道逾 17,000 座島嶼",
+        coordText: "2.1°S, 113.8°E",
+        note: "世界最大群島國家，涵蓋蘇門答臘、爪哇、加里曼丹、蘇拉威西與巴布亞西部；2026 年法定首都仍為雅加達，東加里曼丹新政治都城「努山塔拉」持續推進中。"
+      },
+      "626": {
+        nameZh: "東帝汶",
+        nameEn: "TIMOR-LESTE // TLS",
+        region: "sea_maritime",
+        regionLabel: "東南亞群島 (2025新入盟)",
+        color: "#855737",
+        capital: "帝力",
+        capitalCoord: [125.5736, -8.5569],
+        labelCoord: [126.00, -8.85],
+        area: "14,874 km²",
+        terrain: "帝汶島東部山地與阿陶羅島",
+        coordText: "8.6°S, 125.6°E",
+        note: "位於努沙登加拉群島東端、帝汶島東半部及歐庫西飛地；2025 年 10 月正式成為東協第 11 個成員國，2026 年為其首個完整會員年。",
+        isSmallIsland: true
+      }
+    };
+
+    const SEA_LABELS = [
+      { zh: "日本海", en: "SEA OF JAPAN", coord: [134.5, 39.8], size: 11 },
+      { zh: "東海", en: "EAST CHINA SEA", coord: [125.5, 29.2], size: 10 },
+      { zh: "南海", en: "SOUTH CHINA SEA", coord: [114.2, 14.5], size: 12 },
+      { zh: "菲律賓海", en: "PHILIPPINE SEA", coord: [131.5, 19.5], size: 12 },
+      { zh: "太平洋", en: "PACIFIC OCEAN", coord: [143.5, 27.0], size: 13 },
+      { zh: "麻六甲海峽", en: "STRAIT OF MALACCA", coord: [99.8, 3.8], size: 8.5 },
+      { zh: "印度洋", en: "INDIAN OCEAN", coord: [94.0, -5.5], size: 13 }
+    ];
+
+    const svg = d3.select("#tactical-map");
+    const container = document.getElementById("map-container");
+    let width = container.clientWidth;
+    let height = container.clientHeight;
+
+    // 定義投影與路徑生成器 (涵蓋東南亞與東北亞最佳視野)
+    const projection = d3.geoMercator();
+    const path = d3.geoPath().projection(projection);
+
+    function fitMapProjection() {
+      width = container.clientWidth;
+      height = container.clientHeight;
+      svg.attr("viewBox", [0, 0, width, height]);
+
+      // 使用虛擬地理邊界矩形，確保東北亞(北海道/蒙古)至東南亞(印尼/東帝汶)完美置中
+      const sectorBounds = {
+        type: "Feature",
+        geometry: {
+          type: "MultiPoint",
+          coordinates: [
+            [88, -11.5],  // 西南邊界 (印度洋/蘇門答臘)
+            [146, 48.5]   // 東北邊界 (北海道/庫頁島/太平洋)
+          ]
+        }
+      };
+      const padLeft = window.innerWidth > 900 ? 340 : 40;
+      const padRight = 60;
+      const padTop = 85;
+      const padBottom = 50;
+      projection.fitExtent(
+        [[padLeft, padTop], [width - padRight, height - padBottom]],
+        sectorBounds
+      );
+    }
+
+    fitMapProjection();
+
+    // 建立主縮放群組
+    const gRoot = svg.append("g").attr("id", "map-root");
+    const gGrid = gRoot.append("g").attr("id", "layer-grid");
+    const gContext = gRoot.append("g").attr("id", "layer-context");
+    const gTargets = gRoot.append("g").attr("id", "layer-targets");
+    const gSeas = gRoot.append("g").attr("id", "layer-seas");
+    const gNodes = gRoot.append("g").attr("id", "layer-nodes");
+    const gLabels = gRoot.append("g").attr("id", "layer-labels");
+    const gReticle = gRoot.append("g").attr("class", "target-reticle");
+
+    // 鎖定準星 SVG 繪製
+    gReticle.append("circle")
+      .attr("r", 16)
+      .attr("fill", "none")
+      .attr("stroke", "#ffcf99")
+      .attr("stroke-width", 1)
+      .attr("stroke-dasharray", "5,3")
+      .attr("class", "reticle-spin");
+    gReticle.append("circle")
+      .attr("r", 23)
+      .attr("fill", "none")
+      .attr("stroke", "rgba(232, 168, 107, 0.45)")
+      .attr("stroke-width", 0.8);
+    gReticle.append("path")
+      .attr("d", "M-28,0 L-19,0 M19,0 L28,0 M0,-28 L0,-19 M0,19 L0,28")
+      .attr("stroke", "#ffe0bd")
+      .attr("stroke-width", 1.1);
+
+    // 繪製經緯度網格與赤道線
+    const graticule = d3.geoGraticule().step([10, 10]);
+    gGrid.append("path")
+      .datum(graticule())
+      .attr("class", "graticule")
+      .attr("d", path);
+
+    gGrid.append("path")
+      .datum({
+        type: "LineString",
+        coordinates: d3.range(60, 175, 2).map(lon => [lon, 0])
+      })
+      .attr("class", "equator-line")
+      .attr("d", path);
+
+    // DOM 元素快取
+    const tooltip = document.getElementById("hover-tooltip");
+    const hudCoords = document.getElementById("hud-coords");
+    const hudZoom = document.getElementById("hud-zoom");
+    const hudClock = document.getElementById("hud-clock");
+
+    let activeRegionFilter = null;
+    let currentZoomK = 1;
+
+    // 縮放與平移控制
+    const zoomBehavior = d3.zoom()
+      .scaleExtent([0.85, 11])
+      .on("zoom", (event) => {
+        const { transform } = event;
+        currentZoomK = transform.k;
+        gRoot.attr("transform", transform);
+        hudZoom.textContent = `${transform.k.toFixed(2)}x`;
+
+        // 依縮放比例動態微調線寬與字體，保持衛星VECTOR銳利度
+        const invScale = 1 / Math.pow(transform.k, 0.72);
+        gTargets.selectAll(".target-country")
+          .style("stroke-width", `${0.85 * invScale}px`);
+        gContext.selectAll(".context-land")
+          .style("stroke-width", `${0.6 * invScale}px`);
+        gGrid.selectAll(".graticule")
+          .style("stroke-width", `${0.6 / transform.k}px`);
+        gLabels.selectAll(".country-label-map")
+          .attr("font-size", d => `${(d.isSmallIsland ? 8.5 : 10.5) * invScale}px`);
+        gNodes.selectAll(".capital-node")
+          .attr("transform", d => {
+            const [x, y] = projection(d.capitalCoord);
+            return `translate(${x}, ${y}) scale(${invScale})`;
+          });
+      });
+
+    svg.call(zoomBehavior);
+
+    // 即時滑鼠經緯度監測
+    svg.on("mousemove", (event) => {
+      const transform = d3.zoomTransform(svg.node());
+      const [mx, my] = d3.pointer(event);
+      const invertedPoint = projection.invert(transform.invert([mx, my]));
+      if (invertedPoint) {
+        const [lon, lat] = invertedPoint;
+        if (lat >= -85 && lat <= 85 && lon >= -180 && lon <= 180) {
+          const latDir = lat >= 0 ? "N" : "S";
+          const lonDir = lon >= 0 ? "E" : "W";
+          hudCoords.textContent = `LAT ${Math.abs(lat).toFixed(2)}°${latDir} | LON ${Math.abs(lon).toFixed(2)}°${lonDir}`;
+        }
+      }
+    });
+
+    // 更新左側固定面板與準星
+    function updateIntelPanel(info) {
+      document.getElementById("panel-region-tag").textContent = info.regionLabel;
+      document.getElementById("panel-name").textContent = info.nameZh;
+      document.getElementById("panel-en").textContent = info.nameEn;
+      document.getElementById("panel-capital").textContent = info.capital;
+      document.getElementById("panel-area").textContent = info.area;
+      document.getElementById("panel-coord").textContent = info.coordText;
+      document.getElementById("panel-terrain").textContent = info.terrain;
+      document.getElementById("panel-desc").textContent = info.note;
+
+      const [cx, cy] = projection(info.capitalCoord);
+      const invScale = 1 / Math.pow(currentZoomK, 0.72);
+      gReticle
+        .attr("transform", `translate(${cx}, ${cy}) scale(${invScale})`)
+        .classed("visible", true);
+    }
+
+    // 浮動提示框定位
+    function positionTooltip(event) {
+      const offset = 18;
+      const ttRect = tooltip.getBoundingClientRect();
+      let left = event.clientX + offset;
+      let top = event.clientY + offset;
+
+      if (left + ttRect.width > window.innerWidth - 16) {
+        left = event.clientX - ttRect.width - offset;
+      }
+      if (top + ttRect.height > window.innerHeight - 16) {
+        top = event.clientY - ttRect.height - offset;
+      }
+      tooltip.style.left = `${Math.max(12, left)}px`;
+      tooltip.style.top = `${Math.max(70, top)}px`;
+    }
+
+    function showTooltip(event, info) {
+      document.getElementById("tt-name").textContent = info.nameZh;
+      document.getElementById("tt-badge").textContent = info.regionLabel;
+      document.getElementById("tt-capital").textContent = info.capital;
+      document.getElementById("tt-area").textContent = info.area;
+      document.getElementById("tt-terrain").textContent = info.terrain;
+      document.getElementById("tt-note").textContent = info.note;
+      tooltip.classList.add("visible");
+      positionTooltip(event);
+    }
+
+    function hideTooltip() {
+      tooltip.classList.remove("visible");
+    }
+
+    // 載入 TopoJSON 50m 高精度世界國界圖資
+    async function initMap() {
+      try {
+        const world = await d3.json("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json");
+        const countries = topojson.feature(world, world.objects.countries).features;
+
+        const contextFeatures = [];
+        const targetFeatures = [];
+
+        countries.forEach(f => {
+          const isoId = f.id ? String(f.id).padStart(3, "0") : "";
+          if (COUNTRY_DATA[isoId]) {
+            f.properties.intel = COUNTRY_DATA[isoId];
+            f.properties.isoId = isoId;
+            targetFeatures.push(f);
+          } else {
+            contextFeatures.push(f);
+          }
+        });
+
+        // 1. 繪製非監控區周邊大陸背景 (深暗褐剪影)
+        gContext.selectAll("path")
+          .data(contextFeatures)
+          .join("path")
+          .attr("class", "context-land")
+          .attr("d", path);
+
+        // 2. 繪製東北亞與東南亞棕色系目標國家
+        const targetPaths = gTargets.selectAll("path")
+          .data(targetFeatures)
+          .join("path")
+          .attr("class", "target-country")
+          .attr("data-region", d => d.properties.intel.region)
+          .attr("fill", d => d.properties.intel.color)
+          .attr("d", path)
+          .on("mouseenter", function (event, d) {
+            d3.select(this).raise().classed("active-lock", true);
+            updateIntelPanel(d.properties.intel);
+            showTooltip(event, d.properties.intel);
+          })
+          .on("mousemove", (event) => {
+            positionTooltip(event);
+          })
+          .on("mouseleave", function () {
+            d3.select(this).classed("active-lock", false);
+            hideTooltip();
+          });
+
+        // 3. 繪製戰略海域標籤
+        gSeas.selectAll("g")
+          .data(SEA_LABELS)
+          .join("g")
+          .attr("transform", d => {
+            const [x, y] = projection(d.coord);
+            return `translate(${x}, ${y})`;
+          })
+          .each(function (d) {
+            const g = d3.select(this);
+            g.append("text")
+              .attr("class", "sea-label-zh")
+              .attr("font-size", `${d.size}px`)
+              .attr("y", -2)
+              .text(d.zh);
+            g.append("text")
+              .attr("class", "sea-label")
+              .attr("font-size", `${d.size * 0.68}px`)
+              .attr("y", 10)
+              .text(d.en);
+          });
+
+        // 4. 繪製首都與微型島國互動節點 (確保新加坡、汶萊、東帝汶在任何縮放倍率都能輕鬆點擊懸停)
+        const intelList = Object.entries(COUNTRY_DATA).map(([id, data]) => ({ id, ...data }));
+
+        const nodes = gNodes.selectAll("g.capital-node")
+          .data(intelList)
+          .join("g")
+          .attr("class", "capital-node")
+          .attr("transform", d => {
+            const [x, y] = projection(d.capitalCoord);
+            return `translate(${x}, ${y})`;
+          })
+          .on("mouseenter", (event, d) => {
+            targetPaths.filter(p => p.properties.isoId === d.id)
+              .raise()
+              .classed("active-lock", true);
+            updateIntelPanel(d);
+            showTooltip(event, d);
+          })
+          .on("mousemove", (event) => positionTooltip(event))
+          .on("mouseleave", (event, d) => {
+            targetPaths.filter(p => p.properties.isoId === d.id)
+              .classed("active-lock", false);
+            hideTooltip();
+          });
+
+        // 小型關鍵島國或主要樞紐加入雷達脈衝圈
+        nodes.filter(d => d.isSmallIsland || ["158", "392", "360", "608"].includes(d.id))
+          .append("circle")
+          .attr("class", "pulse-ring")
+          .attr("r", 4);
+
+        nodes.append("circle")
+          .attr("class", "capital-ring")
+          .attr("r", d => d.isSmallIsland ? 5.5 : 4);
+
+        nodes.append("circle")
+          .attr("class", "capital-dot")
+          .attr("r", d => d.isSmallIsland ? 2.6 : 2);
+
+        // 5. 繪製地圖中文國名標籤
+        gLabels.selectAll("text")
+          .data(intelList)
+          .join("text")
+          .attr("class", "country-label-map")
+          .attr("x", d => projection(d.labelCoord)[0])
+          .attr("y", d => projection(d.labelCoord)[1])
+          .attr("font-size", d => d.isSmallIsland ? "8.5px" : "10.5px")
+          .text(d => d.nameZh);
+
+        // 隱藏載入遮罩
+        const loader = document.getElementById("loading-overlay");
+        loader.style.opacity = "0";
+        setTimeout(() => loader.remove(), 450);
+
+      } catch (err) {
+        console.error(err);
+        document.querySelector(".loader-text").textContent = "ERROR: 無法載入矢量國界圖資，請確認網路連線。";
+      }
+    }
+
+    initMap();
+
+    // 右下角圖例點擊篩選區域功能
+    const legendItems = document.querySelectorAll(".legend-item");
+    legendItems.forEach(item => {
+      item.addEventListener("click", () => {
+        const region = item.dataset.region;
+        if (activeRegionFilter === region) {
+          activeRegionFilter = null;
+          legendItems.forEach(el => el.classList.remove("active-filter"));
+          gTargets.selectAll(".target-country").classed("dimmed", false);
+        } else {
+          activeRegionFilter = region;
+          legendItems.forEach(el => el.classList.toggle("active-filter", el.dataset.region === region));
+          gTargets.selectAll(".target-country")
+            .classed("dimmed", d => d.properties.intel.region !== region);
+        }
+      });
+    });
+
+    // 快捷聚焦區域與縮放按鈕
+    function focusCoordinates(lonLatBounds, btnId) {
+      document.querySelectorAll(".control-dock .hud-btn").forEach(b => b.classList.remove("active"));
+      if (btnId) document.getElementById(btnId).classList.add("active");
+
+      const [[minLon, minLat], [maxLon, maxLat]] = lonLatBounds;
+      const [x0, y1] = projection([minLon, minLat]);
+      const [x1, y0] = projection([maxLon, maxLat]);
+      const dx = x1 - x0;
+      const dy = y1 - y0;
+      const cx = (x0 + x1) / 2;
+      const cy = (y0 + y1) / 2;
+      const scale = Math.min(8, 0.78 / Math.max(dx / width, dy / height));
+      const translate = [width / 2 - scale * cx, height / 2 - scale * cy];
+
+      svg.transition()
+        .duration(750)
+        .ease(d3.easeCubicInOut)
+        .call(zoomBehavior.transform, d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale));
+    }
+
+    document.getElementById("btn-zoom-in").addEventListener("click", () => {
+      svg.transition().duration(300).call(zoomBehavior.scaleBy, 1.45);
+    });
+
+    document.getElementById("btn-zoom-out").addEventListener("click", () => {
+      svg.transition().duration(300).call(zoomBehavior.scaleBy, 0.7);
+    });
+
+    document.getElementById("btn-reset").addEventListener("click", () => {
+      document.querySelectorAll(".control-dock .hud-btn").forEach(b => b.classList.remove("active"));
+      document.getElementById("btn-reset").classList.add("active");
+      svg.transition().duration(750).ease(d3.easeCubicInOut).call(zoomBehavior.transform, d3.zoomIdentity);
+    });
+
+    document.getElementById("btn-focus-nea").addEventListener("click", () => {
+      focusCoordinates([[98, 21], [146, 48]], "btn-focus-nea");
+    });
+
+    document.getElementById("btn-focus-sea").addEventListener("click", () => {
+      focusCoordinates([[92, -11], [136, 23]], "btn-focus-sea");
+    });
+
+    // 2026 系統即時遙測時鐘
+    function updateClock() {
+      const now = new Date();
+      const pad = n => String(n).padStart(2, "0");
+      const timeStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+      hudClock.textContent = timeStr;
+    }
+    updateClock();
+    setInterval(updateClock, 1000);
+  </script>
+</body>
+</html>
